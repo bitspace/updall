@@ -8,8 +8,8 @@ For as long as I can remember, I have manually updated all of the software on al
 
 It is most easily expressed in the bash aliases that I use. One of the tricky parts here is that these require `sudo` access.
 
+On my Arch Linux laptop:
 
-On my Arch Linux laptop, hostname `strider.bitspace.org`:
 ```bash
 alias updall='date; paru && paru -Sua && rustup update && cargo install-update -a && sdk selfupdate && sdk update && sdk upgrade && npm update -g && cd && gcloud components update && date'
 ```
@@ -18,14 +18,16 @@ This displays the date; runs the AUR helper `paru` to update all installed packa
 
 I have a similar alias for my home server, also Arch Linux; it lacks only the GCP updates because I do not use GCP from the server.
 
-On my Arch Linux home server, hostname `sleipnir.bitspace.org`:
+On my Arch Linux home server:
+
 ```bash
 alias updall='date; paru && paru -Sua && rustup update && cargo install-update -a && sdk selfupdate && sdk update && sdk upgrade && npm update -g; date'
 ```
 
 I have a similar alias for my VPS running Debian Linux. Note that it invokes the appropriate package management system, `apt` in this case, instead of `paru` on my Arch Linux systems.
 
-On my Debian Linux VPS, hostname `ssdnode.bitspace.org`:
+On my Debian Linux VPS:
+
 ```bash
 alias updall='date; sudo apt update && sudo apt upgrade && sudo apt autoremove && rustup update && cargo install-update -a && sdk selfupdate && sdk update && sdk upgrade && npm update -g; date'
 ```
