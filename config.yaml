@@ -1,0 +1,43 @@
+systems:
+  laptop:
+    hostname: strider.bitspace.org
+    type: arch
+    sudo_method: password
+    updates:
+      - system_packages
+      - rust
+      - node
+      - sdkman
+      - gcloud
+  
+  home_server:
+    hostname: sleipnir.bitspace.org
+    type: arch
+    ssh:
+      user: chris
+      key_file: ~/.ssh/id_rsa
+    sudo_method: password
+    updates:
+      - system_packages
+      - rust
+      - node
+      - sdkman
+  
+  vps:
+    hostname: ssdnode.bitspace.org
+    type: debian
+    ssh:
+      user: chris
+      key_file: ~/.ssh/id_rsa
+    sudo_method: password
+    updates:
+      - system_packages
+      - rust
+      - node
+      - sdkman
+
+update_settings:
+  parallel: false
+  timeout: 3600
+  log_level: INFO
+  sudo_password_env: UPDATE_SUDO_PASS
