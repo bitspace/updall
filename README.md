@@ -4,7 +4,7 @@
 
 A utility that runs my daily operating system and software updates.  
 
-For as long as I can remember, I have manually updated all of the software on all of my computers, usually Linux, sometimes macOS, rarely Windows.  
+For as long as I can remember, I have manually updated all of the software on all of my computers - usually Linux, sometimes macOS, rarely Windows.  
 
 It is most easily expressed in the bash aliases that I use. One of the tricky parts here is that these require `sudo` access.
 
