@@ -53,9 +53,7 @@ def main():
         else:
             systems_to_update = systems_config
         
-        for system_name, system_config in systems_to_update.items():
-            logger.log_system_start(system_name)
-            
+        for system_name, system_config in systems_to_update.items():            
             try:
                 system = create_system(system_name, system_config)
                 
@@ -73,7 +71,15 @@ def main():
                             logger.info(f"[DRY RUN] Would run: {final_cmd}")
                 else:
                     results = system.run_updates()
-                    logger.info(f"Update results for {system_name}: {results}")
+                    
+                    # Print summary results
+                    print(f"\n=== Update Results for {system_name} ===")
+                    for update_type, result in results.items():
+                        status_symbol = "✓" if result.get('success', False) else "✗"
+                        print(f"{status_symbol} {update_type}: {result.get('status', 'unknown')}")
+                        
+                        if not result.get('success', False) and 'error' in result:
+                            print(f"  Error: {result['error']}")
                 
             except Exception as e:
                 logger.error(f"Failed to update system {system_name}: {e}")

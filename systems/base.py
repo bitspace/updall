@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple
 import os
+import subprocess
+import time
+import pexpect
 
 
 class BaseSystem(ABC):
@@ -86,9 +89,149 @@ class BaseSystem(ABC):
         
         return method_map[update_type]()
     
+    def execute_command_local(self, command: str, needs_sudo: bool = False, 
+                             handles_sudo_internally: bool = False, 
+                             timeout: int = 3600) -> Tuple[int, str, str]:
+        """
+        Execute command locally with proper sudo handling
+        
+        Returns:
+            Tuple of (exit_code, stdout, stderr)
+        """
+        if handles_sudo_internally and self.sudo_password:
+            return self._execute_with_pexpect(command, timeout)
+        elif needs_sudo and not handles_sudo_internally:
+            final_command = self.wrap_with_sudo(command)
+            return self._execute_with_subprocess(final_command, timeout)
+        else:
+            return self._execute_with_subprocess(command, timeout)
+    
+    def _execute_with_subprocess(self, command: str, timeout: int) -> Tuple[int, str, str]:
+        """Execute command using subprocess"""
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            return result.returncode, result.stdout, result.stderr
+        except subprocess.TimeoutExpired:
+            return 124, "", f"Command timed out after {timeout} seconds"
+        except Exception as e:
+            return 1, "", str(e)
+    
+    def _execute_with_pexpect(self, command: str, timeout: int) -> Tuple[int, str, str]:
+        """Execute command using pexpect for interactive sudo handling"""
+        try:
+            child = pexpect.spawn(command, timeout=timeout)
+            output = ""
+            
+            while True:
+                try:
+                    index = child.expect([
+                        pexpect.TIMEOUT,
+                        pexpect.EOF,
+                        r'\[sudo\] password.*:',
+                        r'Password.*:',
+                        r'.*'
+                    ], timeout=10)
+                    
+                    if index == 0:  # TIMEOUT
+                        output += child.before.decode() if child.before else ""
+                        continue
+                    elif index == 1:  # EOF
+                        output += child.before.decode() if child.before else ""
+                        break
+                    elif index in [2, 3]:  # sudo password prompt
+                        if self.sudo_password:
+                            child.sendline(self.sudo_password)
+                            output += child.before.decode() if child.before else ""
+                        else:
+                            child.close()
+                            return 1, output, "Sudo password required but not provided"
+                    else:  # Regular output
+                        output += child.before.decode() if child.before else ""
+                        output += child.after.decode() if child.after else ""
+                
+                except pexpect.TIMEOUT:
+                    continue
+                except pexpect.EOF:
+                    break
+            
+            exit_code = child.exitstatus if child.exitstatus is not None else 0
+            child.close()
+            return exit_code, output, ""
+            
+        except Exception as e:
+            return 1, "", str(e)
+    
     def run_updates(self) -> Dict[str, Any]:
-        """Run updates for this system - to be implemented by concrete classes"""
+        """Run updates for this system"""
+        from utils.logger import get_logger
+        logger = get_logger()
+        
         results = {}
+        start_time = time.time()
+        
+        logger.log_system_start(self.name)
+        
         for update_type in self.update_types:
-            results[update_type] = {"status": "pending"}
+            logger.log_update_type_start(update_type)
+            
+            try:
+                commands = self.get_commands_for_update_type(update_type)
+                update_results = []
+                success = True
+                
+                for command, options in commands:
+                    logger.log_command_start(command)
+                    cmd_start_time = time.time()
+                    
+                    exit_code, stdout, stderr = self.execute_command_local(
+                        command,
+                        options.get('needs_sudo', False),
+                        options.get('handles_sudo_internally', False)
+                    )
+                    
+                    cmd_duration = time.time() - cmd_start_time
+                    logger.log_command_complete(command, exit_code, cmd_duration)
+                    
+                    cmd_result = {
+                        'command': command,
+                        'exit_code': exit_code,
+                        'stdout': stdout,
+                        'stderr': stderr,
+                        'duration': cmd_duration,
+                        'success': exit_code == 0
+                    }
+                    
+                    update_results.append(cmd_result)
+                    
+                    if exit_code != 0:
+                        success = False
+                        logger.error(f"Command failed: {command} (exit code: {exit_code})")
+                        if stderr:
+                            logger.error(f"Error output: {stderr}")
+                
+                results[update_type] = {
+                    'status': 'success' if success else 'failed',
+                    'commands': update_results,
+                    'success': success
+                }
+                
+                logger.log_update_type_complete(update_type, success)
+                
+            except Exception as e:
+                logger.error(f"Failed to execute {update_type} updates: {e}")
+                results[update_type] = {
+                    'status': 'error',
+                    'error': str(e),
+                    'success': False
+                }
+        
+        total_duration = time.time() - start_time
+        logger.log_system_complete(self.name, total_duration)
+        
         return results
