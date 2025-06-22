@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import pexpect
+from utils.ssh import SSHConnection
 
 
 class BaseSystem(ABC):
@@ -14,10 +15,17 @@ class BaseSystem(ABC):
         self.ssh_config = config.get('ssh')
         self.sudo_method = config.get('sudo_method', 'password')
         self.sudo_password = None
+        self.is_local = self._is_local_system()
         
         if self.sudo_method == 'password':
             env_var = config.get('sudo_password_env', 'UPDATE_SUDO_PASS')
             self.sudo_password = os.environ.get(env_var)
+    
+    def _is_local_system(self) -> bool:
+        """Determine if this system should be executed locally"""
+        return (self.ssh_config is None or 
+                self.hostname in ['localhost', '127.0.0.1'] or
+                self.hostname == os.uname().nodename)
     
     @abstractmethod
     def get_package_update_commands(self) -> List[Tuple[str, Dict[str, Any]]]:
@@ -88,6 +96,33 @@ class BaseSystem(ABC):
             raise ValueError(f"Unknown update type: {update_type}")
         
         return method_map[update_type]()
+    
+    def create_ssh_connection(self) -> Optional[SSHConnection]:
+        """Create SSH connection if needed"""
+        if self.is_local or not self.ssh_config:
+            return None
+        
+        return SSHConnection(
+            hostname=self.hostname,
+            username=self.ssh_config['user'],
+            key_file=self.ssh_config['key_file'],
+            sudo_password=self.sudo_password
+        )
+    
+    def execute_command(self, command: str, needs_sudo: bool = False, 
+                       handles_sudo_internally: bool = False, 
+                       timeout: int = 3600,
+                       ssh_connection: Optional[SSHConnection] = None) -> Tuple[int, str, str]:
+        """
+        Execute command locally or remotely based on system configuration
+        
+        Returns:
+            Tuple of (exit_code, stdout, stderr)
+        """
+        if self.is_local:
+            return self.execute_command_local(command, needs_sudo, handles_sudo_internally, timeout)
+        else:
+            return self.execute_command_remote(command, needs_sudo, handles_sudo_internally, ssh_connection)
     
     def execute_command_local(self, command: str, needs_sudo: bool = False, 
                              handles_sudo_internally: bool = False, 
@@ -167,6 +202,28 @@ class BaseSystem(ABC):
         except Exception as e:
             return 1, "", str(e)
     
+    def execute_command_remote(self, command: str, needs_sudo: bool = False,
+                              handles_sudo_internally: bool = False,
+                              ssh_connection: Optional[SSHConnection] = None) -> Tuple[int, str, str]:
+        """
+        Execute command remotely via SSH
+        
+        Returns:
+            Tuple of (exit_code, stdout, stderr)
+        """
+        if ssh_connection is None:
+            return 1, "", "No SSH connection provided for remote execution"
+        
+        try:
+            return ssh_connection.execute_command(
+                command,
+                use_sudo=needs_sudo,
+                sudo_method=self.sudo_method,
+                interactive_sudo=handles_sudo_internally
+            )
+        except Exception as e:
+            return 1, "", f"Remote command execution failed: {e}"
+    
     def run_updates(self) -> Dict[str, Any]:
         """Run updates for this system"""
         from utils.logger import get_logger
@@ -174,62 +231,92 @@ class BaseSystem(ABC):
         
         results = {}
         start_time = time.time()
+        ssh_connection = None
         
         logger.log_system_start(self.name)
         
-        for update_type in self.update_types:
-            logger.log_update_type_start(update_type)
-            
+        # Create SSH connection if needed
+        if not self.is_local:
             try:
-                commands = self.get_commands_for_update_type(update_type)
-                update_results = []
-                success = True
+                ssh_connection = self.create_ssh_connection()
+                if ssh_connection:
+                    logger.info(f"Establishing SSH connection to {self.hostname}")
+                    ssh_connection.connect()
+                    logger.info(f"Successfully connected to {self.hostname}")
+            except Exception as e:
+                logger.error(f"Failed to connect to {self.hostname}: {e}")
+                return {
+                    'connection_error': {
+                        'status': 'failed',
+                        'error': f"SSH connection failed: {e}",
+                        'success': False
+                    }
+                }
+        
+        try:
+            for update_type in self.update_types:
+                logger.log_update_type_start(update_type)
                 
-                for command, options in commands:
-                    logger.log_command_start(command)
-                    cmd_start_time = time.time()
+                try:
+                    commands = self.get_commands_for_update_type(update_type)
+                    update_results = []
+                    success = True
                     
-                    exit_code, stdout, stderr = self.execute_command_local(
-                        command,
-                        options.get('needs_sudo', False),
-                        options.get('handles_sudo_internally', False)
-                    )
+                    for command, options in commands:
+                        logger.log_command_start(command)
+                        cmd_start_time = time.time()
+                        
+                        exit_code, stdout, stderr = self.execute_command(
+                            command,
+                            options.get('needs_sudo', False),
+                            options.get('handles_sudo_internally', False),
+                            ssh_connection=ssh_connection
+                        )
+                        
+                        cmd_duration = time.time() - cmd_start_time
+                        logger.log_command_complete(command, exit_code, cmd_duration)
+                        
+                        cmd_result = {
+                            'command': command,
+                            'exit_code': exit_code,
+                            'stdout': stdout,
+                            'stderr': stderr,
+                            'duration': cmd_duration,
+                            'success': exit_code == 0
+                        }
+                        
+                        update_results.append(cmd_result)
+                        
+                        if exit_code != 0:
+                            success = False
+                            logger.error(f"Command failed: {command} (exit code: {exit_code})")
+                            if stderr:
+                                logger.error(f"Error output: {stderr}")
                     
-                    cmd_duration = time.time() - cmd_start_time
-                    logger.log_command_complete(command, exit_code, cmd_duration)
-                    
-                    cmd_result = {
-                        'command': command,
-                        'exit_code': exit_code,
-                        'stdout': stdout,
-                        'stderr': stderr,
-                        'duration': cmd_duration,
-                        'success': exit_code == 0
+                    results[update_type] = {
+                        'status': 'success' if success else 'failed',
+                        'commands': update_results,
+                        'success': success
                     }
                     
-                    update_results.append(cmd_result)
+                    logger.log_update_type_complete(update_type, success)
                     
-                    if exit_code != 0:
-                        success = False
-                        logger.error(f"Command failed: {command} (exit code: {exit_code})")
-                        if stderr:
-                            logger.error(f"Error output: {stderr}")
-                
-                results[update_type] = {
-                    'status': 'success' if success else 'failed',
-                    'commands': update_results,
-                    'success': success
-                }
-                
-                logger.log_update_type_complete(update_type, success)
-                
-            except Exception as e:
-                logger.error(f"Failed to execute {update_type} updates: {e}")
-                results[update_type] = {
-                    'status': 'error',
-                    'error': str(e),
-                    'success': False
-                }
+                except Exception as e:
+                    logger.error(f"Failed to execute {update_type} updates: {e}")
+                    results[update_type] = {
+                        'status': 'error',
+                        'error': str(e),
+                        'success': False
+                    }
+        
+        finally:
+            # Clean up SSH connection
+            if ssh_connection:
+                try:
+                    ssh_connection.close()
+                    logger.debug(f"Closed SSH connection to {self.hostname}")
+                except Exception as e:
+                    logger.warning(f"Error closing SSH connection: {e}")
         
         total_duration = time.time() - start_time
         logger.log_system_complete(self.name, total_duration)
