@@ -1,0 +1,20 @@
+[Unit]
+Description=Daily System Updates
+Documentation=man:systemd.timer(5)
+Requires=network-online.target
+After=network-online.target
+
+[Timer]
+# Run daily at a random time between 3:00 and 4:00 AM
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=3600
+
+# Ensure timer runs even if system was off
+Persistent=true
+
+# Prevent multiple instances
+RefuseManualStart=false
+RefuseManualStop=false
+
+[Install]
+WantedBy=timers.target

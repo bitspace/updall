@@ -1,0 +1,59 @@
+[Unit]
+Description=System Update Service
+Documentation=man:updall(1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Environment
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=/etc/updall"
+
+# Command execution
+ExecStart=/usr/local/bin/updall --config /etc/updall/config.yaml --report summary
+ExecStartPre=/bin/bash -c 'test -f /etc/updall/config.yaml || { echo "Config file not found"; exit 1; }'
+
+# Output handling
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=updall
+
+# Timeouts
+TimeoutStartSec=3600
+TimeoutStopSec=300
+
+# Resource limits
+MemoryMax=1G
+TasksMax=100
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+# Writable paths
+ReadWritePaths=/var/log/updall /tmp /var/cache /var/lib/pacman /var/lib/apt
+
+# Networking
+PrivateNetwork=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Temporary filesystem
+PrivateTmp=true
+PrivateDevices=true
+
+# Process control
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

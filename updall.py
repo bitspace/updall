@@ -2,6 +2,8 @@
 
 import argparse
 import sys
+import os
+import getpass
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +12,8 @@ from systems.arch import ArchSystem
 from systems.debian import DebianSystem
 from utils.logger import get_logger
 from utils.reporter import UpdateReporter
+from utils.error_handler import ErrorHandler, handle_exception
+from utils.dry_run import DryRunValidator
 
 
 def create_system(name: str, config: dict):
@@ -23,6 +27,7 @@ def create_system(name: str, config: dict):
         raise ValueError(f"Unknown system type: {system_type}")
 
 
+@handle_exception
 def main():
     parser = argparse.ArgumentParser(description="Update all systems")
     parser.add_argument("--config", help="Path to config file")
@@ -32,6 +37,8 @@ def main():
     parser.add_argument("--log-file", help="Log to file")
     parser.add_argument("--only", help="Update only specific components (comma-separated)")
     parser.add_argument("--report", choices=['summary', 'json'], help="Generate detailed report")
+    parser.add_argument("--ask-sudo-pass", action="store_true", help="Prompt for sudo password interactively")
+    parser.add_argument("--validate-only", action="store_true", help="Only validate systems without running updates")
     
     args = parser.parse_args()
     
@@ -43,11 +50,24 @@ def main():
         log_level = "DEBUG" if args.verbose else update_settings.get('log_level', 'INFO')
         
         logger = get_logger(log_level, args.log_file)
+        error_handler = ErrorHandler(logger)
+        
+        # Handle interactive sudo password
+        if args.ask_sudo_pass:
+            try:
+                sudo_password = getpass.getpass("Enter sudo password: ")
+                os.environ['UPDATE_SUDO_PASS'] = sudo_password
+                logger.debug("Sudo password set from interactive prompt")
+            except KeyboardInterrupt:
+                print("\nOperation cancelled by user")
+                sys.exit(1)
+        
         logger.info("Starting updall")
         
-        # Initialize reporter
+        # Initialize reporter and dry-run validator
         reporter = UpdateReporter()
         reporter.set_start_time()
+        dry_run_validator = DryRunValidator(logger)
         
         systems_config = config_parser.get_systems()
         
@@ -59,6 +79,33 @@ def main():
         else:
             systems_to_update = systems_config
         
+        # Validation mode - just check system readiness
+        if args.validate_only:
+            validation_results = {}
+            for system_name, system_config in systems_to_update.items():
+                try:
+                    system = create_system(system_name, system_config)
+                    if args.only:
+                        update_types = [t.strip() for t in args.only.split(',')]
+                        system.update_types = [t for t in system.update_types if t in update_types]
+                    
+                    validation_results[system_name] = dry_run_validator.validate_system_requirements(
+                        system_name, system_config, system.update_types
+                    )
+                except Exception as e:
+                    validation_results[system_name] = {
+                        'system_name': system_name,
+                        'error': str(e),
+                        'reachable': False,
+                        'tools_available': {},
+                        'missing_tools': [],
+                        'warnings': [f"System creation failed: {e}"],
+                        'estimated_duration': 0
+                    }
+            
+            print(dry_run_validator.generate_dry_run_report(validation_results))
+            return
+
         for system_name, system_config in systems_to_update.items():            
             try:
                 system = create_system(system_name, system_config)
@@ -68,13 +115,32 @@ def main():
                     system.update_types = [t for t in system.update_types if t in update_types]
                 
                 if args.dry_run:
-                    logger.info(f"[DRY RUN] Would update {system_name} with: {system.update_types}")
-                    for update_type in system.update_types:
-                        commands = system.get_commands_for_update_type(update_type)
-                        for cmd, opts in commands:
-                            final_cmd = system.prepare_command(cmd, opts.get('needs_sudo', False), 
-                                                             opts.get('handles_sudo_internally', False))
-                            logger.info(f"[DRY RUN] Would run: {final_cmd}")
+                    # Enhanced dry-run with validation
+                    validation_result = dry_run_validator.validate_system_requirements(
+                        system_name, system_config, system.update_types
+                    )
+                    
+                    print(f"\n=== DRY RUN: {system_name} ===")
+                    print(f"System reachable: {'✓' if validation_result['reachable'] else '✗'}")
+                    
+                    if validation_result['missing_tools']:
+                        print(f"Missing tools: {', '.join(validation_result['missing_tools'])}")
+                    
+                    if validation_result['warnings']:
+                        for warning in validation_result['warnings']:
+                            print(f"⚠  {warning}")
+                    
+                    print(f"Update types: {system.update_types}")
+                    
+                    commands = dry_run_validator.validate_commands(system, system.update_types)
+                    print("Commands to execute:")
+                    for cmd, info in commands:
+                        sudo_info = " (sudo)" if info['needs_sudo'] else ""
+                        print(f"  {info['update_type']}: {cmd}{sudo_info}")
+                    
+                    if validation_result['estimated_duration'] > 0:
+                        duration = dry_run_validator._format_duration(validation_result['estimated_duration'])
+                        print(f"Estimated duration: {duration}")
                 else:
                     results = system.run_updates()
                     reporter.add_system_result(system_name, results)
