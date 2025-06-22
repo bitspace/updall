@@ -8,5 +8,6 @@ class DebianSystem(BaseSystem):
         return [
             ("apt update", {"needs_sudo": True, "handles_sudo_internally": False}),
             ("apt upgrade -y", {"needs_sudo": True, "handles_sudo_internally": False}),
-            ("apt autoremove -y", {"needs_sudo": True, "handles_sudo_internally": False})
+            ("apt autoremove -y", {"needs_sudo": True, "handles_sudo_internally": False}),
+            ("apt autoclean", {"needs_sudo": True, "handles_sudo_internally": False})
         ]

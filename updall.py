@@ -9,6 +9,7 @@ from config import ConfigParser
 from systems.arch import ArchSystem
 from systems.debian import DebianSystem
 from utils.logger import get_logger
+from utils.reporter import UpdateReporter
 
 
 def create_system(name: str, config: dict):
@@ -30,6 +31,7 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--log-file", help="Log to file")
     parser.add_argument("--only", help="Update only specific components (comma-separated)")
+    parser.add_argument("--report", choices=['summary', 'json'], help="Generate detailed report")
     
     args = parser.parse_args()
     
@@ -42,6 +44,10 @@ def main():
         
         logger = get_logger(log_level, args.log_file)
         logger.info("Starting updall")
+        
+        # Initialize reporter
+        reporter = UpdateReporter()
+        reporter.set_start_time()
         
         systems_config = config_parser.get_systems()
         
@@ -71,19 +77,39 @@ def main():
                             logger.info(f"[DRY RUN] Would run: {final_cmd}")
                 else:
                     results = system.run_updates()
+                    reporter.add_system_result(system_name, results)
                     
-                    # Print summary results
-                    print(f"\n=== Update Results for {system_name} ===")
-                    for update_type, result in results.items():
-                        status_symbol = "✓" if result.get('success', False) else "✗"
-                        print(f"{status_symbol} {update_type}: {result.get('status', 'unknown')}")
-                        
-                        if not result.get('success', False) and 'error' in result:
-                            print(f"  Error: {result['error']}")
+                    # Print simple status if not generating detailed report
+                    if not args.report:
+                        print(f"\n=== Update Results for {system_name} ===")
+                        for update_type, result in results.items():
+                            status_symbol = "✓" if result.get('success', False) else "✗"
+                            print(f"{status_symbol} {update_type}: {result.get('status', 'unknown')}")
+                            
+                            if not result.get('success', False) and 'error' in result:
+                                print(f"  Error: {result['error']}")
                 
             except Exception as e:
                 logger.error(f"Failed to update system {system_name}: {e}")
+                # Add error to reporter
+                reporter.add_system_result(system_name, {
+                    'system_error': {
+                        'status': 'failed',
+                        'error': str(e),
+                        'success': False
+                    }
+                })
                 continue
+        
+        reporter.set_end_time()
+        
+        # Generate and display report if requested
+        if args.report and not args.dry_run:
+            if args.report == 'summary':
+                print("\n" + reporter.generate_summary_report())
+            elif args.report == 'json':
+                import json
+                print(json.dumps(reporter.generate_json_report(), indent=2))
         
         logger.info("Updall completed")
         
