@@ -2,6 +2,8 @@
 
 ## What is this?
 
+**It is a work in progress. It does not work in its current state**  
+
 A utility that runs my daily operating system and software updates.  
 
 For as long as I can remember, I have manually updated all of the software on all of my computers - usually Linux, sometimes macOS, rarely Windows.  
